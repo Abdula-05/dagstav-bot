@@ -41,7 +41,9 @@ def vk_callback():
         data = request.get_json()
 
         if data.get('type') == 'confirmation':
-            return VK_CONFIRMATION
+         from flask import Response
+...
+return Response(VK_CONFIRMATION, mimetype='text/plain')
 
         if VK_SECRET and data.get('secret') != VK_SECRET:
             return 'ok'
