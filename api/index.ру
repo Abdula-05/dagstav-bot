@@ -1,0 +1,122 @@
+import os
+import json
+import gspread
+from flask import Flask, request
+from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+import requests
+
+app = Flask(__name__)
+
+# ==========================================
+# 1. НАСТРОЙКИ (берутся из переменных Vercel)
+# ==========================================
+VK_TOKEN = os.environ.get('VK_TOKEN')
+VK_CONFIRMATION = os.environ.get('VK_CONFIRMATION')
+VK_SECRET = os.environ.get('VK_SECRET')
+VK_GROUP_ID = int(os.environ.get('VK_GROUP_ID', 241607121))
+SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID')
+CALENDAR_ID = os.environ.get('CALENDAR_ID')
+
+# ==========================================
+# 2. АВТОРИЗАЦИЯ GOOGLE
+# ==========================================
+google_creds_info = json.loads(os.environ.get('GOOGLE_JSON'))
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive',
+    'https://www.googleapis.com/auth/calendar'
+]
+creds = Credentials.from_service_account_info(google_creds_info, scopes=SCOPES)
+
+gc = gspread.authorize(creds)
+calendar_service = build('calendar', 'v3', credentials=creds)
+
+# ==========================================
+# 3. ОБРАБОТКА ЗАПРОСОВ ОТ ВК
+# ==========================================
+@app.route('/', methods=['POST'])
+def vk_callback():
+    try:
+        data = request.get_json()
+
+        if data.get('type') == 'confirmation':
+            return VK_CONFIRMATION
+
+        if VK_SECRET and data.get('secret') != VK_SECRET:
+            return 'ok'
+
+        if data.get('type') == 'message_new':
+            msg = data['object']['message']
+            handle_message(
+                user_id=msg['from_id'],
+                peer_id=msg['peer_id'],
+                text=msg.get('text', '').strip()
+            )
+
+        return 'ok'
+
+    except Exception as e:
+        print(f"Ошибка: {e}")
+        return 'ok'
+
+# ==========================================
+# 4. ЛОГИКА БОТА
+# ==========================================
+def handle_message(user_id, peer_id, text):
+    sheet = gc.open_by_key(SPREADSHEET_ID).worksheet('Участники')
+
+    user_cell = None
+    try:
+        user_cell = sheet.find(str(user_id), in_column=3)
+    except:
+        pass
+
+    if text.lower() in ['/start', 'начать']:
+        if user_cell is None:
+            send_vk_message(peer_id,
+                'Привет! Давай зарегистрируемся.\n'
+                'Напиши своё ФИО и телефон через запятую:\n\n'
+                'Иван Петров, +79991234567')
+        else:
+            send_vk_message(peer_id, 'Ты уже в базе! Напиши /help.')
+        return
+
+    if text.lower() == '/help':
+        send_vk_message(peer_id,
+            'Команды:\n'
+            '/start — регистрация\n'
+            '/help — помощь')
+        return
+
+    if user_cell is None and ',' in text:
+        parts = text.split(',')
+        full_name = parts[0].strip()
+        phone = parts[1].strip() if len(parts) > 1 else 'не указан'
+
+        sheet.append_row([full_name, phone, str(user_id)])
+        send_vk_message(peer_id, f'Отлично, {full_name}! Ты зарегистрирован.')
+        return
+
+    send_vk_message(peer_id, 'Не понимаю. Напиши /help.')
+
+# ==========================================
+# 5. ОТПРАВКА СООБЩЕНИЯ В VK
+# ==========================================
+def send_vk_message(peer_id, text):
+    url = 'https://api.vk.com/method/messages.send'
+    params = {
+        'access_token': VK_TOKEN,
+        'v': '5.199',
+        'peer_id': peer_id,
+        'message': text,
+        'random_id': 0
+    }
+    try:
+        response = requests.post(url, data=params, timeout=10)
+        print(f"VK ответ: {response.text}")
+    except Exception as e:
+        print(f"Ошибка отправки в VK: {e}")
+
+if __name__ == '__main__':
+    app.run(debug=True)
